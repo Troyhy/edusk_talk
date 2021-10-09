@@ -2,6 +2,7 @@
 
 # Press Shift+F10 to execute it or replace it with your code.
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+import os
 import re
 from pprint import pprint
 from time import sleep, time
@@ -134,6 +135,17 @@ def webdriver_scrape_talks(chromedriver: WebDriver):
     return result_data
 
 
+def results_to_csv(results, filename):
+    import csv
+
+    fieldnames = results[0].keys()
+
+    with open(filename, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in results:
+            writer.writerow(row)
+
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
@@ -147,14 +159,15 @@ if __name__ == '__main__':
     webdriver_init_page(chromedriver=driver, url=url, settings=page_settings)
     talks = []
 
-    results = True
+    more_results = True
     try:
-        while results:
+        while more_results:
             talks = talks + webdriver_scrape_talks(chromedriver=driver)
-            results = navigate_to_next_results(driver)
+            more_results = navigate_to_next_results(driver)
             sleep(0.5)
             print(f'Gathered talks:{len(talks)}')
     except Exception as e:
         print(e)
 
-    pprint(talks)
+
+    results_to_csv(talks, os.path.join('test_runs', 'puheet.csv'))
