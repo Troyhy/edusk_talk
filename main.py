@@ -1,26 +1,26 @@
-# This is a sample Python script.
-
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
 import os
 import re
 from dataclasses import dataclass
-from pprint import pprint
 from time import sleep, time
 from typing import Optional, List
 
 from bs4 import BeautifulSoup
+from retry import retry
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, \
-    ElementNotInteractableException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    ElementNotInteractableException,
+)
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
-from retry import retry
 
 
 @dataclass
 class PageButton:
+    """
+    Dataclass to represent buttons on a webpage.
+    """
     id_to_click: str
     id_to_wait: Optional[str] = None
     delay: int = 0
@@ -42,21 +42,25 @@ class wait_for_page_load(object):
 
 
 def wait_for(condition_function):
+    """
+    utility to wait for condition function to return truthty value
+    :param condition_function: 
+    :return: 
+    """
+
     start_time = time()
     while time() < start_time + 10:
         try:
             if retval := condition_function():
                 return retval
             else:
-                print(f"rrr {retval}")
+                pass
         except NoSuchElementException:
             pass
         finally:
             sleep(0.1)
 
-    raise Exception(
-        'Timeout waiting for {}'.format(condition_function.__name__)
-    )
+    raise Exception('Timeout waiting for {}'.format(condition_function.__name__))
 
 
 def click_through_to_new_page(chromedriver: WebDriver, link_id):
@@ -76,20 +80,29 @@ def click_through_to_new_page(chromedriver: WebDriver, link_id):
 
 
 def webdriver_init_page(chromedriver: WebDriver, url, settings: List[PageButton]):
-    driver.get(url)
+    """
+    Load page and click trough initial button configurations
+    :param chromedriver: 
+    :param url: 
+    :param settings: 
+    :return: 
+    """
 
-    if not "Haku:" in driver.title:
-        raise Exception("Unable to load google page!")
+    chromedriver.get(url)
 
-    @retry((StaleElementReferenceException,ElementNotInteractableException), delay=0.2, tries=5)
+    # TODO: make this initial check configurable
+    if 'Haku:' not in chromedriver.title:
+        raise Exception('Unable to load google page!')
+
+    @retry((StaleElementReferenceException, ElementNotInteractableException), delay=0.2, tries=5)
     def handle_button_press():
-        print(f"trying to find button id:{page_button.id_to_click}")
+        print(f'trying to find button id:{page_button.id_to_click}')
         elem = wait_for(lambda: chromedriver.find_element_by_id(page_button.id_to_click))
-        print(f"pushing the button button id:{page_button.id_to_click}")
+        print(f'pushing the button button id:{page_button.id_to_click}')
         elem.click()
-        print(f"waiting resulting id to appear id:{page_button.id_to_wait}")
+        print(f'waiting resulting id to appear id:{page_button.id_to_wait}')
         wait_for(lambda: chromedriver.find_element_by_id(page_button.id_to_wait))
-        print("---")
+        print('---')
 
     for page_button in settings:
         handle_button_press()
@@ -99,8 +112,14 @@ def webdriver_init_page(chromedriver: WebDriver, url, settings: List[PageButton]
     return driver
 
 
-@retry((StaleElementReferenceException,), delay=1, tries=3)
+@retry((StaleElementReferenceException,), delay=0.5, tries=5)
 def navigate_to_next_results(chromedriver: WebDriver, next_button='PageLinkNext'):
+    """
+    Find next button and click it.
+    :param chromedriver:
+    :param next_button:
+    :return:
+    """
     next = wait_for(lambda: chromedriver.find_element_by_id(next_button))
 
     if next:
@@ -111,22 +130,35 @@ def navigate_to_next_results(chromedriver: WebDriver, next_button='PageLinkNext'
 
 
 def webdriver_scrape_talks(chromedriver: WebDriver):
+    """
+    find all talks in page and extract data from those
+    :param chromedriver:
+    :return: list of dicts with data scraped
+    """
+
     results = chromedriver.find_element_by_class_name('ms-srch-group')
     soup = BeautifulSoup(results.get_attribute('innerHTML'), 'html.parser')
-
     search_results = soup.find_all('div', {'name': 'Item'})
     result_data = []
     for result in search_results:
-        result_data.append({
-            'title': re.sub(' +', ' ', result.find('div', {'class': 'ms-srch-item-title'}).find('a').text),
-            'link': result.find('div', {'class': 'ms-srch-item-title'}).find('a')['href'],
-            'speaker': re.sub(' +', ' ', result.find('div', {'class': 'edk-srch-tmpl-puhuja'}).text),
-            'intro': re.sub(' +', ' ', result.find('div', {'class': 'edk-srch-tmpl-puheenvuoro'}).text),
-        })
+        result_data.append(
+            {
+                'title': re.sub(' +', ' ', result.find('div', {'class': 'ms-srch-item-title'}).find('a').text),
+                'link': result.find('div', {'class': 'ms-srch-item-title'}).find('a')['href'],
+                'speaker': re.sub(' +', ' ', result.find('div', {'class': 'edk-srch-tmpl-puhuja'}).text),
+                'intro': re.sub(' +', ' ', result.find('div', {'class': 'edk-srch-tmpl-puheenvuoro'}).text),
+            }
+        )
     return result_data
 
 
-def results_to_csv(results, filename):
+def results_to_csv(results: List[dict], filename):
+    """
+    Save results to cvs format to filename. first element is used for fieldnames.
+    :param results: scraped results
+    :param filename: file to write csv
+    :return: None
+    """
     import csv
 
     fieldnames = results[0].keys()
@@ -138,11 +170,10 @@ def results_to_csv(results, filename):
             writer.writerow(row)
 
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    driver = webdriver.Chrome('./chromedriver')  # Optional argument, if not specified will
+    driver = webdriver.Chrome('./chromedriver')
 
-    url = "https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx"
+    url = 'https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'
     page_button_settings = [
         PageButton('Asiakirjatyyppinimi_Link_Puheenvuoro', 'Asiakirjatyyppinimi_ChkGroup_Puheenvuoro_ContentLink', 0.2),
         PageButton('button-ValtiopaivavuosiTeksti2', 'ValtiopaivavuosiTeksti2_Link_2021', 0),
@@ -151,8 +182,8 @@ if __name__ == '__main__':
         PageButton('Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', 'PageLinkNext', 0),
     ]
 
-    webdriver_init_page(chromedriver=driver, url=url, settings=page_button_settings)
     talks = []
+    webdriver_init_page(chromedriver=driver, url=url, settings=page_button_settings)
 
     more_results = True
     try:
