@@ -2,7 +2,7 @@ import os
 import re
 from dataclasses import dataclass
 from time import sleep, time
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from bs4 import BeautifulSoup
 from retry import retry
@@ -12,6 +12,7 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
     ElementNotInteractableException,
 )
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.keys import Keys
 
@@ -23,7 +24,7 @@ class PageButton:
     """
     id_to_click: str
     id_to_wait: Optional[str] = None
-    delay: int = 0
+    delay: Union[int, float] = 0
 
 
 class wait_for_page_load(object):
@@ -41,15 +42,16 @@ class wait_for_page_load(object):
         wait_for(self.page_has_loaded)
 
 
-def wait_for(condition_function):
+def wait_for(condition_function, max_wait=10):
     """
     utility to wait for condition function to return truthty value
-    :param condition_function: 
+    :param max_wait: max wait time before giving up
+    :param condition_function:
     :return: 
     """
 
     start_time = time()
-    while time() < start_time + 10:
+    while time() < start_time + max_wait:
         try:
             if retval := condition_function():
                 return retval
@@ -58,20 +60,25 @@ def wait_for(condition_function):
         except NoSuchElementException:
             pass
         finally:
-            sleep(0.1)
+            sleep(0.2)
 
     raise Exception('Timeout waiting for {}'.format(condition_function.__name__))
 
 
-def click_through_to_new_page(chromedriver: WebDriver, link_id):
+def click_through_to_new_page(chromedriver: WebDriver, link_id, id_to_refresh=None):
     # click link and detect when page changes
-    link = chromedriver.find_element_by_id(link_id)
+    link = wait_for(lambda: chromedriver.find_element_by_id(link_id))
+    if id_to_refresh:
+        wait_to_refresh = chromedriver.find_element_by_id(id_to_refresh)
+    else:
+        wait_to_refresh = link
+
     link.click()
 
     def link_has_gone_stale():
         try:
             # poll the link with an arbitrary call
-            link.find_elements_by_id('doesnt-matter')
+            wait_to_refresh.find_elements_by_id('doesnt-matter')
             return False
         except StaleElementReferenceException:
             return True
@@ -87,21 +94,18 @@ def webdriver_init_page(chromedriver: WebDriver, url, settings: List[PageButton]
     :param settings: 
     :return: 
     """
+    with wait_for_page_load(chromedriver):
+        chromedriver.get(url)
 
-    chromedriver.get(url)
-
-    # TODO: make this initial check configurable
-    if 'Haku:' not in chromedriver.title:
-        raise Exception('Unable to load google page!')
-
-    @retry((StaleElementReferenceException, ElementNotInteractableException), delay=0.2, tries=5)
+    @retry((StaleElementReferenceException, ElementNotInteractableException), delay=1, tries=5)
     def handle_button_press():
-        print(f'trying to find button id:{page_button.id_to_click}')
-        elem = wait_for(lambda: chromedriver.find_element_by_id(page_button.id_to_click))
-        print(f'pushing the button button id:{page_button.id_to_click}')
+        print(f'trying to find button: {page_button.id_to_click}')
+        elem = wait_for(lambda: chromedriver.find_element_by_css_selector(page_button.id_to_click))
+        print(f'pushing the button button: {page_button.id_to_click}')
         elem.click()
-        print(f'waiting resulting id to appear id:{page_button.id_to_wait}')
-        wait_for(lambda: chromedriver.find_element_by_id(page_button.id_to_wait))
+        if page_button.id_to_wait:
+            print(f'waiting resulting id to appear id: {page_button.id_to_wait}')
+            wait_for(lambda: chromedriver.find_element_by_css_selector(page_button.id_to_wait))
         print('---')
 
     for page_button in settings:
@@ -112,7 +116,7 @@ def webdriver_init_page(chromedriver: WebDriver, url, settings: List[PageButton]
     return driver
 
 
-@retry((StaleElementReferenceException,), delay=0.5, tries=5)
+@retry((StaleElementReferenceException,), delay=1, tries=5)
 def navigate_to_next_results(chromedriver: WebDriver, next_button='PageLinkNext'):
     """
     Find next button and click it.
@@ -121,7 +125,6 @@ def navigate_to_next_results(chromedriver: WebDriver, next_button='PageLinkNext'
     :return:
     """
     next = wait_for(lambda: chromedriver.find_element_by_id(next_button))
-
     if next:
         next.send_keys(Keys.END)
         next.click()
@@ -144,6 +147,7 @@ def webdriver_scrape_talks(chromedriver: WebDriver):
         result_data.append(
             {
                 'title': re.sub(' +', ' ', result.find('div', {'class': 'ms-srch-item-title'}).find('a').text),
+                'date': re.sub(' +', ' ', result.find('div', {'class': 'ms-srch-item-summary'}).text),
                 'link': result.find('div', {'class': 'ms-srch-item-title'}).find('a')['href'],
                 'speaker': re.sub(' +', ' ', result.find('div', {'class': 'edk-srch-tmpl-puhuja'}).text),
                 'intro': re.sub(' +', ' ', result.find('div', {'class': 'edk-srch-tmpl-puheenvuoro'}).text),
@@ -170,16 +174,32 @@ def results_to_csv(results: List[dict], filename):
             writer.writerow(row)
 
 
+def dedup_results(talks):
+    import pandas as pd
+    return pd.DataFrame(talks).drop_duplicates('title').to_dict('records')
+
+
 if __name__ == '__main__':
-    driver = webdriver.Chrome('./chromedriver')
+
+    chrome_options = webdriver.ChromeOptions()
+
+    # chrome_options.add_argument('--headless')
+    # chrome_options.add_argument('--disable-extensions')
+    # chrome_options.add_argument('--no-gpu')
+    # chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-setuid-sandbox')
+
+    driver = webdriver.Chrome(executable_path='./chromedriver', options=chrome_options)
 
     url = 'https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'
     page_button_settings = [
-        PageButton('Asiakirjatyyppinimi_Link_Puheenvuoro', 'Asiakirjatyyppinimi_ChkGroup_Puheenvuoro_ContentLink', 0.2),
-        PageButton('button-ValtiopaivavuosiTeksti2', 'ValtiopaivavuosiTeksti2_Link_2021', 0),
-        PageButton('ValtiopaivavuosiTeksti2_Link_2021', 'ValtiopaivavuosiTeksti2_ChkGroup_2021_ContentLink', 0.5),
-        PageButton('button-Puheenvuorotyyppi', 'Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', 0),
-        PageButton('Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', 'PageLinkNext', 0),
+        PageButton('.btn-consent-reject', delay=1),
+        PageButton('#Asiakirjatyyppinimi_Link_Puheenvuoro', '#Asiakirjatyyppinimi_ChkGroup_Puheenvuoro_ContentLink',
+                   2),
+        PageButton('#button-ValtiopaivavuosiTeksti2', '#ValtiopaivavuosiTeksti2_Link_2021', 0),
+        PageButton('#ValtiopaivavuosiTeksti2_Link_2021', '#ValtiopaivavuosiTeksti2_ChkGroup_2021_ContentLink', 0.5),
+        PageButton('#button-Puheenvuorotyyppi', '#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', 0),
+        PageButton('#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', '#PageLinkNext', 0),
     ]
 
     talks = []
@@ -194,5 +214,10 @@ if __name__ == '__main__':
             print(f'Gathered talks:{len(talks)}')
     except Exception as e:
         print(e)
+
+    print('---'*10)
+    print(f'Gathered talks:{len(talks)}')
+    talks = dedup_results(talks)
+    print(f'Gathered talks after dedup:{len(talks)}')
 
     results_to_csv(talks, os.path.join('test_runs', 'puheet.csv'))
