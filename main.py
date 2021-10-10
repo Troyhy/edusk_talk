@@ -1,6 +1,9 @@
+import getopt
 import os
 import re
+import sys
 from dataclasses import dataclass
+from datetime import datetime
 from time import sleep, time
 from typing import Optional, List, Union
 
@@ -25,6 +28,11 @@ class PageButton:
     id_to_click: str
     id_to_wait: Optional[str] = None
     delay: Union[int, float] = 0
+
+
+@dataclass
+class PageUrl:
+    url: str
 
 
 class wait_for_page_load(object):
@@ -86,7 +94,7 @@ def click_through_to_new_page(chromedriver: WebDriver, link_id, id_to_refresh=No
     wait_for(link_has_gone_stale)
 
 
-def webdriver_init_page(chromedriver: WebDriver, url, settings: List[PageButton]):
+def webdriver_init_page(chromedriver: WebDriver, url, settings: List[Union[PageButton, PageUrl]]):
     """
     Load page and click trough initial button configurations
     :param chromedriver: 
@@ -94,8 +102,11 @@ def webdriver_init_page(chromedriver: WebDriver, url, settings: List[PageButton]
     :param settings: 
     :return: 
     """
+
+    page_url = [page_url for page_url in settings if isinstance(page_url, PageUrl)][0]
+
     with wait_for_page_load(chromedriver):
-        chromedriver.get(url)
+        chromedriver.get(page_url.url)
 
     @retry((StaleElementReferenceException, ElementNotInteractableException), delay=1, tries=5)
     def handle_button_press():
@@ -109,11 +120,13 @@ def webdriver_init_page(chromedriver: WebDriver, url, settings: List[PageButton]
         print('---')
 
     for page_button in settings:
+        if not isinstance(page_button,PageButton):  #skip the PageUrl
+            continue
         handle_button_press()
         if page_button.delay:
             sleep(page_button.delay)
 
-    return driver
+    return chromedriver
 
 
 @retry((StaleElementReferenceException,), delay=1, tries=5)
@@ -179,7 +192,55 @@ def dedup_results(talks):
     return pd.DataFrame(talks).drop_duplicates('title').to_dict('records')
 
 
-if __name__ == '__main__':
+# settings for eduskunta page initialization
+setting_groups = {
+    'puheet-2021': [
+        PageUrl('https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'),
+        PageButton('.btn-consent-reject', delay=1),
+        PageButton('#Asiakirjatyyppinimi_Link_Puheenvuoro', '#Asiakirjatyyppinimi_ChkGroup_Puheenvuoro_ContentLink',
+                   2),
+        PageButton('#button-ValtiopaivavuosiTeksti2', '#ValtiopaivavuosiTeksti2_Link_2021', 0),
+        PageButton('#ValtiopaivavuosiTeksti2_Link_2021', '#ValtiopaivavuosiTeksti2_ChkGroup_2021_ContentLink', 0.5),
+        PageButton('#button-Puheenvuorotyyppi', '#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', 0),
+        PageButton('#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', '#PageLinkNext', 0),
+    ],
+    'puheet-2020': [
+        PageUrl('https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'),
+        PageButton('.btn-consent-reject', delay=1),
+        PageButton('#Asiakirjatyyppinimi_Link_Puheenvuoro', '#Asiakirjatyyppinimi_ChkGroup_Puheenvuoro_ContentLink',
+                   2),
+        PageButton('#button-ValtiopaivavuosiTeksti2', '#ValtiopaivavuosiTeksti2_Link_2020', 0),
+        PageButton('#ValtiopaivavuosiTeksti2_Link_2020', '#ValtiopaivavuosiTeksti2_ChkGroup_2020_ContentLink', 0.5),
+        PageButton('#button-Puheenvuorotyyppi', '#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', 0),
+        PageButton('#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', '#PageLinkNext', 0),
+    ]
+
+}
+
+
+def main(argv):
+    try:
+        opts, args = getopt.getopt(argv, "hs:", )
+    except getopt.GetoptError:
+        print('test.py -s <talk-setting>')
+        sys.exit(2)
+
+    # set default setting
+    talk_setting_name = list(setting_groups.keys())[0]
+
+    for opt, arg in opts:
+        if opt == '-h':
+            print('test.py -s <talk-setting>')
+            print(f"where <talk-settings>, use one of these:{list(setting_groups.keys())}")
+            sys.exit()
+        elif opt in ("-s",):
+            if arg in setting_groups.keys():
+                talk_setting_name = arg
+            else:
+                print(f"unrecognized <talk-setting>, use one of these:{list(setting_groups.keys())}")
+                sys.exit(1)
+
+    # start fetching data
 
     chrome_options = webdriver.ChromeOptions()
 
@@ -192,18 +253,9 @@ if __name__ == '__main__':
     driver = webdriver.Chrome(executable_path='./chromedriver', options=chrome_options)
 
     url = 'https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'
-    page_button_settings = [
-        PageButton('.btn-consent-reject', delay=1),
-        PageButton('#Asiakirjatyyppinimi_Link_Puheenvuoro', '#Asiakirjatyyppinimi_ChkGroup_Puheenvuoro_ContentLink',
-                   2),
-        PageButton('#button-ValtiopaivavuosiTeksti2', '#ValtiopaivavuosiTeksti2_Link_2021', 0),
-        PageButton('#ValtiopaivavuosiTeksti2_Link_2021', '#ValtiopaivavuosiTeksti2_ChkGroup_2021_ContentLink', 0.5),
-        PageButton('#button-Puheenvuorotyyppi', '#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', 0),
-        PageButton('#Puheenvuorotyyppi_Link_Varsinainen_puheenvuoro', '#PageLinkNext', 0),
-    ]
 
     talks = []
-    webdriver_init_page(chromedriver=driver, url=url, settings=page_button_settings)
+    webdriver_init_page(chromedriver=driver, url=url, settings=setting_groups[talk_setting_name])
 
     more_results = True
     try:
@@ -215,9 +267,14 @@ if __name__ == '__main__':
     except Exception as e:
         print(e)
 
-    print('---'*10)
+    print('---' * 10)
     print(f'Gathered talks:{len(talks)}')
     talks = dedup_results(talks)
     print(f'Gathered talks after dedup:{len(talks)}')
 
-    results_to_csv(talks, os.path.join('test_runs', 'puheet.csv'))
+    timestamp = datetime.now().astimezone().isoformat(timespec='seconds')
+    results_to_csv(talks, os.path.join('test_runs', f'{talk_setting_name}_{timestamp}.csv'))
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
