@@ -289,14 +289,16 @@ def main(argv):
             '--disable-dev-shm-usage',
             '--window-size=1920x1080',
             'user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36'
-
         )
         for argument in _chrome_args:
             chrome_options.add_argument(argument)
 
-        driver = webdriver.Remote(command_executor=chromedriver_remote, options=chrome_options)
+        @retry(delay=1, tries=3)
+        def _get_driver():
+            return  webdriver.Remote(command_executor=chromedriver_remote, options=chrome_options)
 
-    #    url = 'https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'
+        driver = _get_driver()
+
 
     talks = []
     webdriver_init_page(chromedriver=driver, settings=setting_groups[talk_setting_name])
@@ -310,6 +312,10 @@ def main(argv):
                 break
             sleep(0.5)
             print(f'Gathered talks:{len(talks)}')
+    except WebDriverException as e:
+        print(f'Failen with error:{e}')
+        with open(os.path.join('test_runs', 'error.png')) as f:
+            f.write(driver.get_screenshot_as_png())
     except Exception as e:
         print(e)
 

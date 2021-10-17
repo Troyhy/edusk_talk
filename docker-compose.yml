@@ -10,6 +10,10 @@ services:
      - chromedriver
    volumes:
      - ./test_runs:/app/test_runs/
+   command:
+     - python
+     - /app/main.py
+     - -e 30
 
   chromedriver:
     image: selenium/standalone-chrome:3.141.59
