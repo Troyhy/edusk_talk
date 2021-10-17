@@ -1,9 +1,11 @@
+import csv
 import getopt
 import os
 import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from io import StringIO
 from time import sleep, time
 from typing import Optional, List, Union
 
@@ -13,9 +15,8 @@ from selenium import webdriver
 from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException,
-    ElementNotInteractableException,
+    ElementNotInteractableException, WebDriverException,
 )
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.common.keys import Keys
 
@@ -55,7 +56,7 @@ def wait_for(condition_function, max_wait=10):
     utility to wait for condition function to return truthty value
     :param max_wait: max wait time before giving up
     :param condition_function:
-    :return: 
+    :return:
     """
 
     start_time = time()
@@ -94,15 +95,15 @@ def click_through_to_new_page(chromedriver: WebDriver, link_id, id_to_refresh=No
     wait_for(link_has_gone_stale)
 
 
-def webdriver_init_page(chromedriver: WebDriver, url, settings: List[Union[PageButton, PageUrl]]):
+def webdriver_init_page(chromedriver: WebDriver, settings: List[Union[PageButton, PageUrl]]):
     """
     Load page and click trough initial button configurations
-    :param chromedriver: 
-    :param url: 
-    :param settings: 
-    :return: 
+    :param chromedriver:
+    :param settings:
+    :return:
     """
 
+    #
     page_url = [page_url for page_url in settings if isinstance(page_url, PageUrl)][0]
 
     with wait_for_page_load(chromedriver):
@@ -120,7 +121,7 @@ def webdriver_init_page(chromedriver: WebDriver, url, settings: List[Union[PageB
         print('---')
 
     for page_button in settings:
-        if not isinstance(page_button,PageButton):  #skip the PageUrl
+        if not isinstance(page_button, PageButton):  # skip the PageUrl
             continue
         handle_button_press()
         if page_button.delay:
@@ -176,15 +177,25 @@ def results_to_csv(results: List[dict], filename):
     :param filename: file to write csv
     :return: None
     """
-    import csv
-
-    fieldnames = results[0].keys()
-
     with open(filename, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in results:
-            writer.writerow(row)
+        _results_to_stream(results, csvfile)
+
+
+def results_to_stdout(results: List[dict]):
+    """
+    Save results to cvs format to filename. first element is used for fieldnames.
+    :param results: scraped results
+    :return: None
+    """
+    _results_to_stream(results, sys.stdout)
+
+
+def _results_to_stream(results: List[dict], stream: StringIO):
+    fieldnames = results[0].keys()
+    writer = csv.DictWriter(stream, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in results:
+        writer.writerow(row)
 
 
 def dedup_results(talks):
@@ -220,13 +231,17 @@ setting_groups = {
 
 def main(argv):
     try:
-        opts, args = getopt.getopt(argv, "hs:", )
+        opts, args = getopt.getopt(argv, "hs:d:r:o:e:", ["--driver-path", "--driver-remote"])
     except getopt.GetoptError:
-        print('test.py -s <talk-setting>')
+        print('test.py -s <talk-setting> -c <chromedriver_path>')
         sys.exit(2)
 
     # set default setting
     talk_setting_name = list(setting_groups.keys())[0]
+    chromedriver_path = os.environ.get('CHROMEDRIVER_PATH')
+    chromedriver_remote = os.environ.get('CHROMEDRIVER_REMOTE')
+    output_path = None
+    stop_after = 0
 
     for opt, arg in opts:
         if opt == '-h':
@@ -239,29 +254,60 @@ def main(argv):
             else:
                 print(f"unrecognized <talk-setting>, use one of these:{list(setting_groups.keys())}")
                 sys.exit(1)
+        elif opt in ("-c", "--driver-path"):
+            chromedriver_path = arg
+        elif opt in ("-r", "--driver-remote"):
+            chromedriver_remote = arg
+        elif opt in ("-e",):
+            stop_after = int(arg)
+        elif opt in ("-o"):
+            if (output_path := arg) == '-':
+                std_output = True
 
     # start fetching data
 
+    if not chromedriver_path and not chromedriver_remote:
+        chromedriver_path = './chromedriver'
+        # sys.stderr.write('error: chromedriver path or remote must be defined')
+        # sys.exit(1)
+
     chrome_options = webdriver.ChromeOptions()
+    if chromedriver_path:
 
-    # chrome_options.add_argument('--headless')
-    # chrome_options.add_argument('--disable-extensions')
-    # chrome_options.add_argument('--no-gpu')
-    # chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-setuid-sandbox')
+        print("Using local Chrome executor")
+        _chrome_args = (
+            '--window-size=1920x1080',
+        )
+        for argument in _chrome_args:
+            chrome_options.add_argument(argument)
+        driver = webdriver.Chrome(executable_path=chromedriver_path, options=chrome_options)
+    else:
+        print("Using remote Chrome executor")
+        _chrome_args = (
+            '--headless', '--disable-gpu',
+            #            '--incognito',
+            '--disable-dev-shm-usage',
+            '--window-size=1920x1080',
+            'user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36'
 
-    driver = webdriver.Chrome(executable_path='./chromedriver', options=chrome_options)
+        )
+        for argument in _chrome_args:
+            chrome_options.add_argument(argument)
 
-    url = 'https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'
+        driver = webdriver.Remote(command_executor=chromedriver_remote, options=chrome_options)
+
+    #    url = 'https://www.eduskunta.fi/FI/search/Sivut/Vaskiresults.aspx'
 
     talks = []
-    webdriver_init_page(chromedriver=driver, url=url, settings=setting_groups[talk_setting_name])
+    webdriver_init_page(chromedriver=driver, settings=setting_groups[talk_setting_name])
 
     more_results = True
     try:
         while more_results:
             talks = talks + webdriver_scrape_talks(chromedriver=driver)
             more_results = navigate_to_next_results(driver)
+            if stop_after and stop_after < len(talks):
+                break
             sleep(0.5)
             print(f'Gathered talks:{len(talks)}')
     except Exception as e:
@@ -273,8 +319,14 @@ def main(argv):
     print(f'Gathered talks after dedup:{len(talks)}')
 
     timestamp = datetime.now().astimezone().isoformat(timespec='seconds')
-    results_to_csv(talks, os.path.join('test_runs', f'{talk_setting_name}_{timestamp}.csv'))
+    if output_path == '-':
+        results_to_stdout(talks)
+    else:
+        results_to_csv(talks, os.path.join(output_path or 'test_runs', f'{talk_setting_name}_{timestamp}.csv'))
 
 
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except WebDriverException as e:
+        print(e)
